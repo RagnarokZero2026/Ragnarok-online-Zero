@@ -57,6 +57,8 @@
   input[type=time], input[type=number] { background: #151821; color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 5px 6px; }
   input[type=number] { width: 70px; }
   .actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .sync { font-size: 12px; margin-top: 4px; }
+  .sync.on { color: var(--pve); } .sync.off { color: var(--pvp); }
   footer { text-align: center; color: var(--muted); font-size: 12px; padding: 20px; }
 </style>
 </head>
@@ -65,6 +67,7 @@
   <div>
     <h1>⚔️ RO Zero – MVP Timer</h1>
     <div class="clock" id="clock"></div>
+    <div class="sync off" id="sync">● Verbinde mit Datenbank…</div>
   </div>
   <div class="controls">
     <div class="tabs">
@@ -76,7 +79,8 @@
     <label>Warnung <input type="number" id="warnMin" min="0" max="60" value="5"> Min. vorher</label>
     <label><input type="checkbox" id="sound" checked> Ton</label>
     <button id="notifyBtn">🔔 Benachrichtigungen</button>
-    <button id="resetAll">Alle zurücksetzen</button>
+    <button id="loginBtn">🔑 Gilden-Login</button>
+    <button id="resetAll" style="display:none">Alle zurücksetzen</button>
   </div>
 </header>
 
@@ -88,9 +92,24 @@
     <tbody id="list"></tbody>
   </table>
 </main>
-<footer>PvE-Respawn: 3 Std. · PvP-Respawn: 2 Std. · Daten werden lokal im Browser gespeichert.<br>MVP-Stats: midgardhub.com / rozerodb.com (Ragnarok Zero Global) · Bilder: divine-pride.net, © Gravity</footer>
+<footer>PvE-Respawn: 3 Std. · PvP-Respawn: 2 Std. · Timer werden live mit allen geteilt (Firebase).<br>MVP-Stats: midgardhub.com / rozerodb.com (Ragnarok Zero Global) · Bilder: divine-pride.net, © Gravity</footer>
 
-<script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getDatabase, ref, onValue, set, remove } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+
+// Web-API-Key aus Firebase (Projekteinstellungen → Allgemein → Meine Apps). Nicht geheim.
+const API_KEY = "AIzaSyBkTGCXvkDtki9uyGNmWcervU96_c-8xmY";
+// Gemeinsamer Gilden-Account (Firebase Authentication → Nutzer). Das Passwort ist das Gilden-Passwort.
+const GUILD_EMAIL = "unity@gmail.com";
+const OPEN_AFTER = 30 * 60e3; // so lange nach Spawn darf jeder ohne Passwort "Getötet" drücken
+
+const app = initializeApp({ apiKey: API_KEY, databaseURL: "https://ro-zero-mvp-timer-default-rtdb.europe-west1.firebasedatabase.app" });
+const db = getDatabase(app);
+const auth = getAuth(app);
+let loggedIn = false;
+
 // Stats laut midgardhub.com (Ragnarok Zero Global); GTB, Orc Hero, Osiris, Amon Ra per Sense im Spiel geprüft (MVP_Sense/)
 const MVPS = [
   { id: 1086, name: "Golden Thief Bug", lvl: 45,  hp: 11582990, ele: "Feuer 2",   eleKey: "fire",   race: "Insekt",       size: "Groß" },
@@ -106,17 +125,21 @@ const RESPAWN = { pve: 3 * 3600e3, pvp: 2 * 3600e3 };
 const STORE = "roZeroMvpTimer_v1";
 
 const entries = [];
-MVPS.forEach(m => ["pve", "pvp"].forEach(type => entries.push({ ...m, mobId: m.id, id: `${m.name}|${type}`, type })));
+MVPS.forEach(m => ["pve", "pvp"].forEach(type => entries.push({ ...m, mobId: m.id, id: `${m.id}_${type}`, oldId: `${m.name}|${type}`, type })));
 
-let state = JSON.parse(localStorage.getItem(STORE) || "{}"); // id -> { kill: ms, warned: bool, spawned: bool }
+let state = {};       // geteilt über Firebase: id -> { kill: ms }
+let notified = JSON.parse(localStorage.getItem(STORE + "_notified") || "{}"); // lokal: id -> { kill, warned, spawned }
+let serverOffset = 0; // Korrektur, falls die PC-Uhr falsch geht
+const now = () => Date.now() + serverOffset;
 let settings = JSON.parse(localStorage.getItem(STORE + "_settings") || '{"warnMin":5,"sound":true,"sort":true,"filter":"all"}');
 
 const pendingTimes = {}; // eingetippte, noch nicht übernommene Uhrzeiten
 const $ = s =>document.querySelector(s);
 const save = () => {
-  localStorage.setItem(STORE, JSON.stringify(state));
+  localStorage.setItem(STORE + "_notified", JSON.stringify(notified));
   localStorage.setItem(STORE + "_settings", JSON.stringify(settings));
 };
+const fail = e => alert("Speichern fehlgeschlagen: " + e.message);
 
 const fmtTime = ms => new Date(ms).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 const fmtDur = ms => {
@@ -143,12 +166,17 @@ function notify(text) {
 }
 
 function setKill(id, when) {
-  state[id] = { kill: when, warned: false, spawned: false };
-  save(); render();
+  set(ref(db, "timers/" + id), { kill: Math.round(when) }).catch(fail);
+}
+function clearKill(id) {
+  remove(ref(db, "timers/" + id)).catch(fail);
 }
 
+// Ohne Passwort: nur wenn kein Timer läuft oder der MVP seit 30 Min. gespawnt ist
+const isOpen = (e, t) => !state[e.id] || state[e.id].kill + RESPAWN[e.type] + OPEN_AFTER <= t;
+
 function render() {
-  const now = Date.now();
+  const t = now();
   let list = entries.filter(e => settings.filter === "all" || e.type === settings.filter);
   if (settings.sort) {
     list = [...list].sort((a, b) => {
@@ -165,7 +193,7 @@ function render() {
     let killTxt = "—", spawnTxt = "—", cd = '<span class="countdown idle">Kein Timer</span>';
     if (!st) tr.className = "idle";
     if (st) {
-      const spawn = st.kill + RESPAWN[e.type], left = spawn - now;
+      const spawn = st.kill + RESPAWN[e.type], left = spawn - t;
       killTxt = fmtTime(st.kill);
       spawnTxt = fmtTime(spawn);
       if (left <= 0) { tr.className = "ready"; cd = `<span class="countdown ready">Gespawnt! <span class="small">(${fmtDur(left)})</span></span>`; }
@@ -180,23 +208,27 @@ function render() {
       <td>${killTxt}</td>
       <td>${spawnTxt}</td>
       <td>${cd}</td>
-      <td class="actions">
+      <td class="actions">${loggedIn ? `
         <button class="kill" data-act="kill">Getötet</button>
         <input type="time" step="60" title="Todeszeit manuell eintragen">
         <button data-act="set" title="Manuelle Zeit übernehmen">✓</button>
-        <button data-act="clear" title="Zurücksetzen">✕</button>
+        <button data-act="clear" title="Zurücksetzen">✕</button>`
+      : isOpen(e, t) ? `<button class="kill" data-act="kill" title="Offen – jeder darf eintragen">Getötet</button>`
+      : `<span class="small" title="Erst ${OPEN_AFTER / 60e3} Min. nach Spawn für alle freigegeben – oder Gilden-Login">🔒 ${st ? "ab " + fmtTime(st.kill + RESPAWN[e.type] + OPEN_AFTER) : ""}</span>`}
       </td>`;
+    const killBtn = tr.querySelector('[data-act=kill]');
+    if (killBtn) killBtn.onclick = () => setKill(e.id, now());
+    if (!loggedIn) { tbody.appendChild(tr); continue; }
     const ti = tr.querySelector("input[type=time]");
     ti.value = pendingTimes[e.id] || "";
     ti.oninput = () => { pendingTimes[e.id] = ti.value; };
-    tr.querySelector('[data-act=kill]').onclick = () => setKill(e.id, Date.now());
-    tr.querySelector('[data-act=clear]').onclick = () => { delete state[e.id]; delete pendingTimes[e.id]; save(); render(); };
+    tr.querySelector('[data-act=clear]').onclick = () => { delete pendingTimes[e.id]; clearKill(e.id); };
     tr.querySelector('[data-act=set]').onclick = () => {
       const v = tr.querySelector("input[type=time]").value;
       if (!v) return alert("Bitte eine Uhrzeit eingeben.");
       const [h, m] = v.split(":").map(Number);
       const d = new Date(); d.setHours(h, m, 0, 0);
-      if (d.getTime() > Date.now()) d.setDate(d.getDate() - 1); // Zeit in der Zukunft = gestern
+      if (d.getTime() > now()) d.setDate(d.getDate() - 1); // Zeit in der Zukunft = gestern
       delete pendingTimes[e.id];
       setKill(e.id, d.getTime());
     };
@@ -205,18 +237,25 @@ function render() {
 }
 
 function tick() {
-  const now = Date.now();
-  $("#clock").textContent = "Serverzeit (lokal): " + new Date().toLocaleString("de-DE");
+  const t = now();
+  $("#clock").textContent = "Uhrzeit: " + new Date(now()).toLocaleString("de-DE");
   let changed = false;
   for (const e of entries) {
     const st = state[e.id]; if (!st) continue;
-    const left = st.kill + RESPAWN[e.type] - now;
-    const label = `${e.name} (${e.type.toUpperCase()})`;
-    if (!st.warned && left <= settings.warnMin * 60e3 && left > 0) {
-      st.warned = true; changed = true; beep(1); notify(`${label} spawnt in ${Math.ceil(left / 60e3)} Min.!`);
+    let n = notified[e.id];
+    if (!n || n.kill !== st.kill) {
+      // neuer Timer: bereits vergangene Meldungen nicht nachträglich auslösen
+      const l = st.kill + RESPAWN[e.type] - t;
+      n = notified[e.id] = { kill: st.kill, warned: l <= settings.warnMin * 60e3, spawned: l <= 0 };
+      changed = true;
     }
-    if (!st.spawned && left <= 0) {
-      st.spawned = st.warned = true; changed = true; beep(3); notify(`${label} ist jetzt gespawnt!`);
+    const left = st.kill + RESPAWN[e.type] - t;
+    const label = `${e.name} (${e.type.toUpperCase()})`;
+    if (!n.warned && left <= settings.warnMin * 60e3 && left > 0) {
+      n.warned = true; changed = true; beep(1); notify(`${label} spawnt in ${Math.ceil(left / 60e3)} Min.!`);
+    }
+    if (!n.spawned && left <= 0) {
+      n.spawned = n.warned = true; changed = true; beep(3); notify(`${label} ist jetzt gespawnt!`);
     }
   }
   if (changed) save();
@@ -244,7 +283,35 @@ $("#notifyBtn").onclick = () => {
   if (!("Notification" in window)) return alert("Dein Browser unterstützt keine Benachrichtigungen.");
   Notification.requestPermission().then(p => alert(p === "granted" ? "Benachrichtigungen aktiviert!" : "Benachrichtigungen nicht erlaubt."));
 };
-$("#resetAll").onclick = () => { if (confirm("Alle Timer zurücksetzen?")) { state = {}; save(); render(); } };
+$("#resetAll").onclick = () => { if (confirm("Alle Timer für ALLE Spieler zurücksetzen?")) remove(ref(db, "timers")).catch(fail); };
+
+// Gilden-Login
+onAuthStateChanged(auth, user => {
+  loggedIn = !!user;
+  $("#loginBtn").textContent = loggedIn ? "🔓 Gilde (Logout)" : "🔑 Gilden-Login";
+  $("#resetAll").style.display = loggedIn ? "" : "none";
+  render();
+});
+$("#loginBtn").onclick = () => {
+  if (loggedIn) return signOut(auth);
+  const pw = prompt("Gilden-Passwort:");
+  if (!pw) return;
+  signInWithEmailAndPassword(auth, GUILD_EMAIL, pw).catch(e =>
+    alert(/invalid-credential|wrong-password|user-not-found/.test(e.code) ? "Falsches Passwort." : "Login fehlgeschlagen: " + e.code));
+};
+
+// Live-Sync
+localStorage.removeItem(STORE); // alte, nur lokal gespeicherte Timer
+onValue(ref(db, "timers"), snap => {
+  state = snap.val() || {};
+  if (!(document.activeElement && document.activeElement.type === "time")) render();
+}, err => { $("#sync").className = "sync off"; $("#sync").textContent = "● Datenbank-Fehler: " + err.message; });
+onValue(ref(db, ".info/connected"), snap => {
+  const on = snap.val() === true;
+  $("#sync").className = "sync " + (on ? "on" : "off");
+  $("#sync").textContent = on ? "● Live – Timer werden mit allen geteilt" : "● Offline – verbinde neu…";
+});
+onValue(ref(db, ".info/serverTimeOffset"), snap => { serverOffset = snap.val() || 0; });
 
 render();
 tick();

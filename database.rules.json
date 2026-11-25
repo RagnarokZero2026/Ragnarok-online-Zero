@@ -1,0 +1,14 @@
+{
+  "rules": {
+    "timers": {
+      ".read": true,
+      ".write": "auth != null && !newData.exists()",
+      "$id": {
+        ".write": "$id.matches(/^(1086|1150|1087|1190|1038|1389|1511|1039)_(pve|pvp)$/) && (auth != null || (newData.child('kill').val() >= now - 60000 && (!data.exists() || ($id.endsWith('_pve') && data.child('kill').val() + 12600000 <= now) || ($id.endsWith('_pvp') && data.child('kill').val() + 9000000 <= now))))",
+        ".validate": "newData.hasChildren(['kill'])",
+        "kill": { ".validate": "newData.isNumber() && newData.val() <= now + 60000 && newData.val() > now - 172800000" },
+        "$other": { ".validate": false }
+      }
+    }
+  }
+}
