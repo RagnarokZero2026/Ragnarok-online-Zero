@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RO Zero – MVP Timer</title>
+<style>
+  :root {
+    --bg: #14161c; --panel: #1d2029; --row: #242834; --text: #e6e8ee; --muted: #8b90a0;
+    --pve: #4caf7d; --pvp: #e05656; --soon: #f0b429; --ready: #3fb8ff; --border: #2f3442;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--text); }
+  header { padding: 16px 24px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); }
+  h1 { margin: 0; font-size: 22px; }
+  .clock { font-variant-numeric: tabular-nums; color: var(--muted); }
+  .controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .controls label { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .tabs button.active { background: #3a4155; color: #fff; }
+  main { padding: 20px 24px; max-width: 1100px; margin: 0 auto; }
+  table { width: 100%; border-collapse: separate; border-spacing: 0 6px; }
+  th { text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); padding: 0 12px; font-weight: 600; }
+  td { background: var(--row); padding: 10px 12px; vertical-align: middle; }
+  td:first-child { border-radius: 8px 0 0 8px; }
+  td:last-child { border-radius: 0 8px 8px 0; }
+  tr.soon td { background: #3a3220; }
+  tr.ready td { background: #1d3446; }
+  .name { font-weight: 600; }
+  .mvp { display: flex; align-items: center; gap: 12px; }
+  .sprite-box { width: 64px; height: 64px; display: flex; align-items: flex-end; justify-content: center; flex-shrink: 0;
+    background: radial-gradient(ellipse at 50% 90%, rgba(0,0,0,.45) 0 30%, transparent 32%); }
+  .sprite { max-width: 64px; max-height: 64px; image-rendering: pixelated; transform-origin: 50% 100%;
+ }
+  tr.soon .sprite { animation: pulse .6s ease-in-out infinite; filter: drop-shadow(0 0 6px var(--soon)); }
+  @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.1); } }
+  tr.ready .sprite { animation: spawned 1s ease-in-out infinite; }
+  @keyframes spawned { 0%,100% { filter: drop-shadow(0 0 4px var(--ready)); } 50% { filter: drop-shadow(0 0 12px var(--ready)); } }
+  tr.idle .sprite { filter: grayscale(.6) brightness(.8); }
+  .hp { font-variant-numeric: tabular-nums; }
+  .ele { display: inline-block; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
+  .ele.fire { background: #5a2a1c; color: #ff9b73; }
+  .ele.earth { background: #4a3b20; color: #e0b56a; }
+  .ele.undead { background: #3b2d4a; color: #c9a3ff; }
+  .ele.shadow { background: #2a2a38; color: #a9a9d6; border: 1px solid #44445e; }
+  .badge { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 10px; color: #111; }
+  .badge.pve { background: var(--pve); } .badge.pvp { background: var(--pvp); }
+  .countdown { font-variant-numeric: tabular-nums; font-size: 18px; font-weight: 600; }
+  .countdown.idle { color: var(--muted); font-size: 14px; font-weight: 400; }
+  .countdown.soon { color: var(--soon); }
+  .countdown.ready { color: var(--ready); }
+  .small { font-size: 12px; color: var(--muted); }
+  button, input, select { font: inherit; }
+  button { background: #2f3546; color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+  button:hover { background: #3a4155; }
+  button.kill { background: #8a2c2c; border-color: #a33; }
+  button.kill:hover { background: #a33a3a; }
+  input[type=time], input[type=number] { background: #151821; color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 5px 6px; }
+  input[type=number] { width: 70px; }
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  footer { text-align: center; color: var(--muted); font-size: 12px; padding: 20px; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>⚔️ RO Zero – MVP Timer</h1>
+    <div class="clock" id="clock"></div>
+  </div>
+  <div class="controls">
+    <div class="tabs">
+      <button data-filter="all" class="active">Alle</button>
+      <button data-filter="pve">PvE</button>
+      <button data-filter="pvp">PvP</button>
+    </div>
+    <label><input type="checkbox" id="sortBySpawn" checked> Nach Spawn sortieren</label>
+    <label>Warnung <input type="number" id="warnMin" min="0" max="60" value="5"> Min. vorher</label>
+    <label><input type="checkbox" id="sound" checked> Ton</label>
+    <button id="notifyBtn">🔔 Benachrichtigungen</button>
+    <button id="resetAll">Alle zurücksetzen</button>
+  </div>
+</header>
+
+<main>
+  <table>
+    <thead>
+      <tr><th>MVP</th><th>HP</th><th>Element</th><th>Map</th><th>Getötet um</th><th>Spawn um</th><th>Verbleibend</th><th>Aktion</th></tr>
+    </thead>
+    <tbody id="list"></tbody>
+  </table>
+</main>
+<footer>PvE-Respawn: 3 Std. · PvP-Respawn: 2 Std. · Daten werden lokal im Browser gespeichert.<br>MVP-Stats: midgardhub.com / rozerodb.com (Ragnarok Zero Global) · Bilder: divine-pride.net, © Gravity</footer>
+
+<script>
+// Stats laut midgardhub.com (Ragnarok Zero Global); GTB, Orc Hero, Osiris, Amon Ra per Sense im Spiel geprüft (MVP_Sense/)
+const MVPS = [
+  { id: 1086, name: "Golden Thief Bug", lvl: 45,  hp: 11582990, ele: "Feuer 2",   eleKey: "fire",   race: "Insekt",       size: "Groß" },
+  { id: 1150, name: "Moonlight Flower", lvl: 79,  hp: 24000000, ele: "Feuer 3",   eleKey: "fire",   race: "Dämon",        size: "Mittel" },
+  { id: 1087, name: "Orc Hero",         lvl: 60,  hp: 65160000, ele: "Erde 2",    eleKey: "earth",  race: "Demi-Human",   size: "Groß" },
+  { id: 1190, name: "Orc Lord",         lvl: 66,  hp: 78757000, ele: "Erde 4",    eleKey: "earth",  race: "Demi-Human",   size: "Groß" },
+  { id: 1038, name: "Osiris",           lvl: 68,  hp: 71311190, ele: "Untot 4",   eleKey: "undead", race: "Untot",        size: "Mittel" },
+  { id: 1389, name: "Dracula",          lvl: 75,  hp: 52500000, ele: "Schatten 4", eleKey: "shadow", race: "Dämon",       size: "Groß" },
+  { id: 1511, name: "Amon Ra",          lvl: 69,  hp: 69621000, ele: "Erde 3",    eleKey: "earth",  race: "Demi-Human",   size: "Groß" },
+  { id: 1039, name: "Baphomet",         lvl: 105, hp: 91182000, ele: "Schatten 3", eleKey: "shadow", race: "Dämon",       size: "Groß" },
+];
+const RESPAWN = { pve: 3 * 3600e3, pvp: 2 * 3600e3 };
+const STORE = "roZeroMvpTimer_v1";
+
+const entries = [];
+MVPS.forEach(m => ["pve", "pvp"].forEach(type => entries.push({ ...m, mobId: m.id, id: `${m.name}|${type}`, type })));
+
+let state = JSON.parse(localStorage.getItem(STORE) || "{}"); // id -> { kill: ms, warned: bool, spawned: bool }
+let settings = JSON.parse(localStorage.getItem(STORE + "_settings") || '{"warnMin":5,"sound":true,"sort":true,"filter":"all"}');
+
+const pendingTimes = {}; // eingetippte, noch nicht übernommene Uhrzeiten
+const $ = s =>document.querySelector(s);
+const save = () => {
+  localStorage.setItem(STORE, JSON.stringify(state));
+  localStorage.setItem(STORE + "_settings", JSON.stringify(settings));
+};
+
+const fmtTime = ms => new Date(ms).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+const fmtDur = ms => {
+  const neg = ms < 0; ms = Math.abs(ms);
+  const h = Math.floor(ms / 3600e3), m = Math.floor(ms % 3600e3 / 60e3), s = Math.floor(ms % 60e3 / 1e3);
+  return (neg ? "+" : "") + `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+};
+
+function beep(times = 1) {
+  if (!settings.sound) return;
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    for (let i = 0; i < times; i++) {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.frequency.value = 880; o.connect(g); g.connect(ctx.destination);
+      const t = ctx.currentTime + i * 0.3;
+      g.gain.setValueAtTime(0.2, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
+      o.start(t); o.stop(t + 0.25);
+    }
+  } catch (e) {}
+}
+function notify(text) {
+  if ("Notification" in window && Notification.permission === "granted") new Notification("MVP Timer", { body: text });
+}
+
+function setKill(id, when) {
+  state[id] = { kill: when, warned: false, spawned: false };
+  save(); render();
+}
+
+function render() {
+  const now = Date.now();
+  let list = entries.filter(e => settings.filter === "all" || e.type === settings.filter);
+  if (settings.sort) {
+    list = [...list].sort((a, b) => {
+      const sa = state[a.id] ? state[a.id].kill + RESPAWN[a.type] : Infinity;
+      const sb = state[b.id] ? state[b.id].kill + RESPAWN[b.type] : Infinity;
+      return sa - sb;
+    });
+  }
+  const tbody = $("#list");
+  tbody.innerHTML = "";
+  for (const e of list) {
+    const st = state[e.id];
+    const tr = document.createElement("tr");
+    let killTxt = "—", spawnTxt = "—", cd = '<span class="countdown idle">Kein Timer</span>';
+    if (!st) tr.className = "idle";
+    if (st) {
+      const spawn = st.kill + RESPAWN[e.type], left = spawn - now;
+      killTxt = fmtTime(st.kill);
+      spawnTxt = fmtTime(spawn);
+      if (left <= 0) { tr.className = "ready"; cd = `<span class="countdown ready">Gespawnt! <span class="small">(${fmtDur(left)})</span></span>`; }
+      else if (left <= settings.warnMin * 60e3) { tr.className = "soon"; cd = `<span class="countdown soon">${fmtDur(left)}</span>`; }
+      else cd = `<span class="countdown">${fmtDur(left)}</span>`;
+    }
+    tr.innerHTML = `
+      <td><div class="mvp"><div class="sprite-box"><img class="sprite" src="sprites/${e.mobId}.png" alt="${e.name}"></div><div><div class="name">${e.name}</div><div class="small">Lv ${e.lvl} · ${e.race} · ${e.size}</div></div></div></td>
+      <td class="hp">${e.hp.toLocaleString("de-DE")}</td>
+      <td><span class="ele ${e.eleKey}">${e.ele}</span></td>
+      <td><span class="badge ${e.type}">${e.type.toUpperCase()}</span> <span class="small">${e.type === "pve" ? "3h" : "2h"}</span></td>
+      <td>${killTxt}</td>
+      <td>${spawnTxt}</td>
+      <td>${cd}</td>
+      <td class="actions">
+        <button class="kill" data-act="kill">Getötet</button>
+        <input type="time" step="60" title="Todeszeit manuell eintragen">
+        <button data-act="set" title="Manuelle Zeit übernehmen">✓</button>
+        <button data-act="clear" title="Zurücksetzen">✕</button>
+      </td>`;
+    const ti = tr.querySelector("input[type=time]");
+    ti.value = pendingTimes[e.id] || "";
+    ti.oninput = () => { pendingTimes[e.id] = ti.value; };
+    tr.querySelector('[data-act=kill]').onclick = () => setKill(e.id, Date.now());
+    tr.querySelector('[data-act=clear]').onclick = () => { delete state[e.id]; delete pendingTimes[e.id]; save(); render(); };
+    tr.querySelector('[data-act=set]').onclick = () => {
+      const v = tr.querySelector("input[type=time]").value;
+      if (!v) return alert("Bitte eine Uhrzeit eingeben.");
+      const [h, m] = v.split(":").map(Number);
+      const d = new Date(); d.setHours(h, m, 0, 0);
+      if (d.getTime() > Date.now()) d.setDate(d.getDate() - 1); // Zeit in der Zukunft = gestern
+      delete pendingTimes[e.id];
+      setKill(e.id, d.getTime());
+    };
+    tbody.appendChild(tr);
+  }
+}
+
+function tick() {
+  const now = Date.now();
+  $("#clock").textContent = "Serverzeit (lokal): " + new Date().toLocaleString("de-DE");
+  let changed = false;
+  for (const e of entries) {
+    const st = state[e.id]; if (!st) continue;
+    const left = st.kill + RESPAWN[e.type] - now;
+    const label = `${e.name} (${e.type.toUpperCase()})`;
+    if (!st.warned && left <= settings.warnMin * 60e3 && left > 0) {
+      st.warned = true; changed = true; beep(1); notify(`${label} spawnt in ${Math.ceil(left / 60e3)} Min.!`);
+    }
+    if (!st.spawned && left <= 0) {
+      st.spawned = st.warned = true; changed = true; beep(3); notify(`${label} ist jetzt gespawnt!`);
+    }
+  }
+  if (changed) save();
+  // Nur Countdown-Spalten neu zeichnen, ohne Eingabefelder zu verlieren
+  if (document.activeElement && document.activeElement.type === "time") return;
+  render();
+}
+
+// Controls
+$("#warnMin").value = settings.warnMin;
+$("#sound").checked = settings.sound;
+$("#sortBySpawn").checked = settings.sort;
+document.querySelectorAll(".tabs button").forEach(b => {
+  b.classList.toggle("active", b.dataset.filter === settings.filter);
+  b.onclick = () => {
+    settings.filter = b.dataset.filter; save();
+    document.querySelectorAll(".tabs button").forEach(x => x.classList.toggle("active", x === b));
+    render();
+  };
+});
+$("#warnMin").onchange = e => { settings.warnMin = Math.max(0, +e.target.value || 0); save(); render(); };
+$("#sound").onchange = e => { settings.sound = e.target.checked; save(); };
+$("#sortBySpawn").onchange = e => { settings.sort = e.target.checked; save(); render(); };
+$("#notifyBtn").onclick = () => {
+  if (!("Notification" in window)) return alert("Dein Browser unterstützt keine Benachrichtigungen.");
+  Notification.requestPermission().then(p => alert(p === "granted" ? "Benachrichtigungen aktiviert!" : "Benachrichtigungen nicht erlaubt."));
+};
+$("#resetAll").onclick = () => { if (confirm("Alle Timer zurücksetzen?")) { state = {}; save(); render(); } };
+
+render();
+tick();
+setInterval(tick, 1000);
+</script>
+</body>
+</html>
